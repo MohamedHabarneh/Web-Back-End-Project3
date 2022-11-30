@@ -1,7 +1,7 @@
 import sqlite3
 import json
 
-conn = sqlite3.connect("var/game.db")
+conn = sqlite3.connect("var/primary/mount/game.db")
 c = conn.cursor()
 
 
