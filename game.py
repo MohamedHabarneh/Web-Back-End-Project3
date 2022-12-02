@@ -31,12 +31,13 @@ async def _connect_db_primary():
 
 async def _connect_db(dbname):
     if(dbname):
-        arg = random.choice([0,1])
+        arg = random.choice([0,1,2])
         if arg == 0:
-                database = databases.Database(app.config["DATABASES"]["secondary"])           
-        else:
+                database = databases.Database(app.config["DATABASES"]["primary"])           
+        elif arg == 1:
                 database = databases.Database(app.config["DATABASES"]["third"])
-                
+        else:
+                database = databases.Database(app.config["DATABASES"]["secondary"])  
         await database.connect()
         return database
 
