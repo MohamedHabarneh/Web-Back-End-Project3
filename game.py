@@ -2,6 +2,7 @@ import dataclasses
 import sqlite3
 import uuid
 import databases
+import random
 import toml
 from quart import Quart, abort, g, request
 from quart_schema import QuartSchema, validate_request
@@ -23,17 +24,34 @@ class Guess:
     word: str
 
 
-async def _connect_db():
-    database = databases.Database(app.config["DATABASES"]["URL"])
+async def _connect_db_primary():
+    database = databases.Database(app.config["DATABASES"]["primary"])
     await database.connect()
     return database
 
+async def _connect_db(dbname):
+    if(dbname):
+        arg = random.choice([0,1,2])
+        if arg == 0:
+                database = databases.Database(app.config["DATABASES"]["primary"])           
+        elif arg == 1:
+                database = databases.Database(app.config["DATABASES"]["third"])
+        else:
+                database = databases.Database(app.config["DATABASES"]["secondary"])  
+        await database.connect()
+        return database
 
-def _get_db():
+        
+
+def _get_db_primary():
+    if not hasattr(g, "sqlite_db_primary"):
+        g.sqlite_db_primary = _connect_db_primary()
+    return g.sqlite_db_primary
+
+def _get_db(dbname):
     if not hasattr(g, "sqlite_db"):
-        g.sqlite_db = _connect_db()
+        g.sqlite_db = _connect_db(dbname)
     return g.sqlite_db
-
 
 @app.teardown_appcontext
 async def close_connection(exception):
@@ -47,33 +65,34 @@ async def create_game():
     # auth method referenced from https://www.youtube.com/watch?v=VW8qJxy4XcQ
     auth = request.authorization
     if auth and auth.username and auth.password:
-        db = await _get_db()
+        db_read = await _get_db("secondary")
+        db_write = await _get_db_primary()
 
         # Retrive random ID from the answers table
-        word = await db.fetch_one(
+        word = await db_read.fetch_one(
             "SELECT answerid FROM answer ORDER BY RANDOM() LIMIT 1"
         )
 
         # Check if the retrived word is a repeat for the user, and if so grab a new word
-        while await db.fetch_one(
+        while await db_read.fetch_one(
             "SELECT answerid FROM games WHERE username = :username AND answerid = :answerid",
             values={"username": auth.username, "answerid": word[0]},
         ):
-            word = await db.fetch_one(
+            word = await db_read.fetch_one(
                 "SELECT answerid FROM answer ORDER BY RANDOM() LIMIT 1"
             )
 
         # Create new game with 0 guesses
         gameid = str(uuid.uuid1())
         values = {"gameid": gameid, "guesses": 0, "gstate": "In-progress"}
-        await db.execute(
+        await db_write.execute(
             "INSERT INTO game(gameid, guesses, gstate) VALUES(:gameid, :guesses, :gstate)",
             values,
         )
 
         # Create new row into Games table which connect with the recently connected game
         values = {"username": auth.username, "answerid": word[0], "gameid": gameid}
-        await db.execute(
+        await db_write.execute(
             "INSERT INTO games(username, answerid, gameid) VALUES(:username, :answerid, :gameid)",
             values,
         )
@@ -97,11 +116,12 @@ async def add_guess(data):
     # auth method referenced from https://www.youtube.com/watch?v=VW8qJxy4XcQ
     auth = request.authorization
     if auth and auth.username and auth.password:
-        db = await _get_db()
+        db_read = await _get_db("secondary")
+        db_write = await _get_db_primary()
         currGame = dataclasses.asdict(data)
 
         # checks whether guessed word is the answer for that game
-        isAnswer = await db.fetch_one(
+        isAnswer = await db_read.fetch_one(
             "SELECT * FROM answer as a where (select count(*) from games where gameid = :gameid and answerid = a.answerid)>=1 and a.answord = :word;",
             currGame,
         )
@@ -110,7 +130,7 @@ async def add_guess(data):
         if isAnswer is not None and len(isAnswer) >= 1:
             # update game status
             try:
-                await db.execute(
+                await db_write.execute(
                     """
                     UPDATE game set gstate = :status where gameid = :gameid
                     """,
@@ -125,17 +145,17 @@ async def add_guess(data):
             }, 201  # should return correct answer?
 
         # if 1 then word is valid otherwise it isn't valid and also check if they exceed guess limit
-        isValidGuess = await db.fetch_one(
+        isValidGuess = await db_read.fetch_one(
             "SELECT * from valid_word where valword = :word;",
             values={"word": currGame["word"]},
         )
         if isValidGuess is None:
-            isValidGuess = await db.fetch_one(
+            isValidGuess = await db_read.fetch_one(
                 "SELECT * from answer where answord = :word;",
                 values={"word": currGame["word"]},
             )
 
-        guessNum = await db.fetch_one(
+        guessNum = await db_read.fetch_one(
             "SELECT guesses from game where gameid = :gameid",
             values={"gameid": currGame["gameid"]},
         )
@@ -144,7 +164,7 @@ async def add_guess(data):
         if isValidGuess is not None and len(isValidGuess) >= 1 and guessNum[0] < 6:
             try:
                 # make a dict mapping each character and its position from the answer
-                answord = await db.fetch_one(
+                answord = await db_read.fetch_one(
                     "SELECT answord FROM answer as a, games as g  where g.gameid = :gameid and g.answerid = a.answerid",
                     values={"gameid": currGame["gameid"]},
                 )
@@ -166,7 +186,7 @@ async def add_guess(data):
                         accuracy += "X"
 
                 # insert guess word into guess table with accruracy
-                await db.execute(
+                await db_write.execute(
                     "INSERT INTO guess(gameid,guessedword, accuracy) VALUES(:gameid, :guessedword, :accuracy)",
                     values={
                         "guessedword": currGame["word"],
@@ -175,7 +195,7 @@ async def add_guess(data):
                     },
                 )
                 # update game table's guess variable by decrementing it
-                await db.execute(
+                await db_write.execute(
                     """
                     UPDATE game set guesses = :guessNum where gameid = :gameid
                     """,
@@ -188,7 +208,7 @@ async def add_guess(data):
                 # if after updating game number of guesses reaches max guesses then mark game as finished
                 if guessNum[0] + 1 >= 6:
                     # update game status as finished
-                    await db.execute(
+                    await db_write.execute(
                         """
                         UPDATE game set gstate = :status where gameid = :gameid
                         """,
@@ -215,9 +235,9 @@ async def all_games():
     # auth method referenced from https://www.youtube.com/watch?v=VW8qJxy4XcQ
     auth = request.authorization
     if auth and auth.username and auth.password:
-        db = await _get_db()
+        db_read = await _get_db("secondary")
 
-        games_val = await db.fetch_all(
+        games_val = await db_read.fetch_all(
             "SELECT * FROM game as a where gameid IN (select gameid from games where username = :username) and a.gstate = :gstate;",
             values={"username": auth.username, "gstate": "In-progress"},
         )
@@ -239,15 +259,15 @@ async def my_game():
     # auth method referenced from https://www.youtube.com/watch?v=VW8qJxy4XcQ
     auth = request.authorization
     if auth and auth.username and auth.password:
-        db = await _get_db()
+        db_read = await _get_db("secondary")
         gameid = request.args.get("id")
 
-        results = await db.fetch_all(
+        results = await db_read.fetch_all(
             "select * from game where gameid = :gameid",
             values={"gameid": gameid},
         )
 
-        guess = await db.fetch_all(
+        guess = await db_read.fetch_all(
             "select guessedword, accuracy from guess where gameid = :gameid",
             values={"gameid": gameid},
         )
