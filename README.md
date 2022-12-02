@@ -61,12 +61,20 @@ upstream gameservice {
 ```
 
 2. Initialize the databases within the project folder
-
    ```c
       // step 1. give the script permissions to execute
-      chmod +x ./bin/init.sh
+      chmod +x ./bin/start.sh
 
       // step 2. run the script
+      ./bin/start.sh
+
+      foreman start
+
+   ```c
+      // step 3. give the script permissions to execute
+      chmod +x ./bin/init.sh
+
+      // step 4. run the script
       ./bin/init.sh
    ```
 
