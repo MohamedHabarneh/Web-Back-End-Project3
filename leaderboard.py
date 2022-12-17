@@ -1,56 +1,66 @@
-import dataclasses
-import sqlite3
-import textwrap
-import databases
-import toml
-from quart import Quart, abort, g, request
-from quart_schema import QuartSchema, validate_request
-
+from quart import Quart, request
+from quart_schema import QuartSchema
+import redis
+import httpx
+import os
 
 app = Quart(__name__)
 QuartSchema(app)
 
-app.config.from_file(f"./etc/{__name__}.toml", toml.load)
-
-async def _connect_db():
-    database = databases.Database(app.config["DATABASES"]["URL"])
-    await database.connect()
-    return database
-
-
-def _get_db():
-    if not hasattr(g, "sqlite_db"):
-        g.sqlite_db = _connect_db()
-    return g.sqlite_db
-
-
-@app.teardown_appcontext
-async def close_connection(exception):
-    db = getattr(g, "_sqlite_db", None)
-    if db is not None:
-        await db.disconnect()
-
-# use redis and pass in dummy data
-@app.route("/postgame", methods=["POST"])
+@app.route('/postgame', methods=['POST'])
 async def postgame():
-    auth = request.authorization
-    if auth and auth.username and auth.password:
-        #the code below is if you made a new database called leaderboard and use sqlite3
-        # db = await _get_db()
-        # game_result = dataclasses.asdict(data)
-        # print("hello")
-        # values = {"gameid": game_result["gameid"], "guesses": game_result["guesses"], "score" : (7-game_result["guesses"])}
-        # print(values)
-        # await db.execute("INSERT INTO leaderboard(gameid,guesses,score) VALUES(:gameid, :guesses, :score)",values,)
-        return {"PostGame":"WORKS"}, 201
-    else:
-        return (
-            {"error": "User not verified"},
-            401,
-            {"WWW-Authenticate": 'Basic realm = "Login required"'},
-        )
+    data = await request.get_json()
+    # test = data.decode('utf-8') 
+    # print(test,type(test))
+    r = redis.Redis(host='localhost',port=6379,db=0)
+    username = data["username"]
+    score = data["score"]
+    print(data,data["username"])
+    r.lpush(username,score) #push user and score as a list
+    r.zadd("username",{username:score}) # will be used to traverse all users
 
+    json_result = {}
+    #iterate all users and combine their individual scores and add it using zadd
+    for key in r.zrange("username",0,-1):
+        score_list = r.lrange(key,0,-1)
+        avg_score = 0
+        #loop through all scores for user, val is in bytes
+        for val in score_list:
+            avg_score += int(val) 
+        #calc avg by total score / len of games
+        avg_score = int(avg_score/r.llen(key))
+        json_result[key.decode('utf-8')] = avg_score
+        r.zadd("username",{key.decode('utf-8'): avg_score})
+    return json_result
+
+@app.route('/leaderboard')
+async def leaderboard():
+    r = redis.Redis(db=0)
+    # r.flushdb() #used to clear db
+
+    #get list of users and their scores
+    scoreL = r.zrange("username",0,-1,withscores=True)
+    result = {}
+    print(len(scoreL), scoreL)
+    if(len(scoreL) < 10 and len(scoreL) >= 1):
+        for i in range(0,len(scoreL)):
+            #add top 10 from scoreL starting from end, since it is sorted in asc order
+            result[scoreL[len(scoreL)-i-1][0].decode('utf-8')] = int(scoreL[len(scoreL)-i-1][1])
+    else:
+        for i in range(0,10):
+            #add top 10 from scoreL starting from end, since it is sorted in asc order
+            result[scoreL[len(scoreL)-i-1][0].decode('utf-8')] = int(scoreL[len(scoreL)-i-1][1])
+    
+    return result
 
 @app.errorhandler(409)
 def conflict(e):
     return {"error": str(e)}, 409
+
+
+# def log_request(request):
+#     print(f"Request event hook: {request.method} {request.url} - Waiting for response")
+
+# def log_response(response):
+#     request = response.request
+#     print(f"Response event hook: {request.method} {request.url} - Status {response.status_code}")

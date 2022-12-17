@@ -4,6 +4,8 @@ import uuid
 import databases
 import random
 import toml
+import json
+import httpx
 from quart import Quart, abort, g, request
 from quart_schema import QuartSchema, validate_request
 
@@ -16,6 +18,10 @@ app.config.from_file(f"./etc/{__name__}.toml", toml.load)
 @dataclasses.dataclass
 class Game:
     username: str
+
+@dataclasses.dataclass
+class CallBackURL:
+    url: str
 
 
 @dataclasses.dataclass
@@ -110,7 +116,7 @@ async def create_game():
 # if it is then insert into guess table
 # update game table by decrementing guess variable
 # if word is not valid throw 404 exception
-@app.route("/addguess", methods=["PUT"])
+@app.route("/addguess", methods=["POST"])
 @validate_request(Guess)
 async def add_guess(data):
     # auth method referenced from https://www.youtube.com/watch?v=VW8qJxy4XcQ
@@ -120,6 +126,10 @@ async def add_guess(data):
         db_write = await _get_db_primary()
         currGame = dataclasses.asdict(data)
 
+        guessNum = await db_read.fetch_one(
+            "SELECT guesses from game where gameid = :gameid",
+            values={"gameid": currGame["gameid"]},
+        )
         # checks whether guessed word is the answer for that game
         isAnswer = await db_read.fetch_one(
             "SELECT * FROM answer as a where (select count(*) from games where gameid = :gameid and answerid = a.answerid)>=1 and a.answord = :word;",
@@ -138,7 +148,9 @@ async def add_guess(data):
                 )
             except sqlite3.IntegrityError as e:
                 abort(404, e)
-
+            score = 7-guessNum[0]
+            payload = {"username":auth.username,"score":score}
+            client = httpx.post(f"http://localhost:5400/postgame?",json=payload)
             return {
                 "guessedWord": currGame["word"],
                 "Accuracy": "\u2713" * 5,
@@ -154,11 +166,6 @@ async def add_guess(data):
                 "SELECT * from answer where answord = :word;",
                 values={"word": currGame["word"]},
             )
-
-        guessNum = await db_read.fetch_one(
-            "SELECT guesses from game where gameid = :gameid",
-            values={"gameid": currGame["gameid"]},
-        )
         accuracy = ""
 
         if isValidGuess is not None and len(isValidGuess) >= 1 and guessNum[0] < 6:
@@ -214,6 +221,8 @@ async def add_guess(data):
                         """,
                         values={"status": "Finished", "gameid": currGame["gameid"]},
                     )
+                    payload = {"username":auth.username,"score":0}
+                    client = httpx.post(f"http://localhost:5400/postgame?",json=payload)
                     return "Max attempts.", 202
             except sqlite3.IntegrityError as e:
                 abort(404, e)
@@ -282,6 +291,25 @@ async def my_game():
             {"WWW-Authenticate": 'Basic realm = "Login required"'},
         )
 
+
+@app.route("/addurl", methods=["POST"])
+@validate_request(CallBackURL)
+async def add_url(data):
+    print("Does it even go here?")
+    auth = request.authorization
+    if auth and auth.username and auth.password:
+        db_read = await _get_db("secondary")
+        db_write = await _get_db_primary()
+        callbackUrl = dataclasses.asdict(data)
+        await db_write.execute(
+                    "INSERT INTO callback_url(url) VALUES(:url)",values={"url": callbackUrl["url"]},)
+        return {"url": callbackUrl["url"]},201
+    else:
+        return (
+            {"error": "User not verified"},
+            401,
+            {"WWW-Authenticate": 'Basic realm = "Login required"'},
+        )
 
 @app.errorhandler(409)
 def conflict(e):
