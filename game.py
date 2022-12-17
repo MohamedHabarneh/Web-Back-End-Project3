@@ -4,8 +4,10 @@ import uuid
 import databases
 import random
 import toml
-import json
 import httpx
+from rq import Queue
+from redis import Redis
+from score_reporter import report_score
 from quart import Quart, abort, g, request
 from quart_schema import QuartSchema, validate_request
 
@@ -13,6 +15,8 @@ app = Quart(__name__)
 QuartSchema(app)
 
 app.config.from_file(f"./etc/{__name__}.toml", toml.load)
+redis_conn = Redis()
+q = Queue(connection=redis_conn)
 
 
 @dataclasses.dataclass
@@ -41,9 +45,9 @@ async def _connect_db(dbname):
         if arg == 0:
                 database = databases.Database(app.config["DATABASES"]["primary"])           
         elif arg == 1:
-                database = databases.Database(app.config["DATABASES"]["third"])
+                database = databases.Database(app.config["DATABASES"]["secondary1"])
         else:
-                database = databases.Database(app.config["DATABASES"]["secondary"])  
+                database = databases.Database(app.config["DATABASES"]["secondary2"])  
         await database.connect()
         return database
 
@@ -148,9 +152,13 @@ async def add_guess(data):
                 )
             except sqlite3.IntegrityError as e:
                 abort(404, e)
-            score = 7-guessNum[0]
+            score = 6-guessNum[0]
             payload = {"username":auth.username,"score":score}
-            client = httpx.post(f"http://localhost:5400/postgame?",json=payload)
+            #get all urls that want to receive scores
+            urls = await db_read.fetch_all("select url from callback_url")
+            print(urls, urls[0])
+            for url in urls:
+                q.enqueue(report_score, url[0], payload)
             return {
                 "guessedWord": currGame["word"],
                 "Accuracy": "\u2713" * 5,
@@ -221,8 +229,13 @@ async def add_guess(data):
                         """,
                         values={"status": "Finished", "gameid": currGame["gameid"]},
                     )
+
+                    #get all urls that want to receive scores
+                    urls = await db_read.fetch_all("select url from callback_url")
+                    #send score to all urls registered to game service
                     payload = {"username":auth.username,"score":0}
-                    client = httpx.post(f"http://localhost:5400/postgame?",json=payload)
+                    for url in urls:
+                        q.enqueue(report_score, url[0], payload)
                     return "Max attempts.", 202
             except sqlite3.IntegrityError as e:
                 abort(404, e)
@@ -295,21 +308,16 @@ async def my_game():
 @app.route("/addurl", methods=["POST"])
 @validate_request(CallBackURL)
 async def add_url(data):
-    print("Does it even go here?")
-    auth = request.authorization
-    if auth and auth.username and auth.password:
-        db_read = await _get_db("secondary")
-        db_write = await _get_db_primary()
-        callbackUrl = dataclasses.asdict(data)
+    db_read = await _get_db("secondary")
+    db_write = await _get_db_primary()
+    callbackUrl = dataclasses.asdict(data)
+    try:
         await db_write.execute(
                     "INSERT INTO callback_url(url) VALUES(:url)",values={"url": callbackUrl["url"]},)
-        return {"url": callbackUrl["url"]},201
-    else:
-        return (
-            {"error": "User not verified"},
-            401,
-            {"WWW-Authenticate": 'Basic realm = "Login required"'},
-        )
+    except sqlite3.IntegrityError as e:
+        return{"error" : e}
+
+    return {"url": callbackUrl["url"]},201
 
 @app.errorhandler(409)
 def conflict(e):

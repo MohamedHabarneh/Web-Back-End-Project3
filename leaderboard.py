@@ -3,19 +3,48 @@ from quart_schema import QuartSchema
 import redis
 import httpx
 import os
+import socket
+import time
+
+has_run = False
+
+
+#register leaderboard service with game service
+def register_callback(num = 0):
+    global has_run
+    print("VALUE IS",has_run)
+    if has_run :
+        return
+    if num > 12:
+        raise Exception('Could not connect nuke foreman with exception')
+    try:
+        #construct callback url for leaderboard service
+        url = socket.getfqdn("http://localhost")
+        port = os.environ.get('PORT')
+
+        #register callback url to games service
+        payload = {"url":f"{url}:{port}/postgame"}
+        resp = httpx.post(f'http://localhost:5100/addurl',json=payload)
+        has_run = True
+        resp.raise_for_status()
+    except (ConnectionError, httpx.HTTPError):
+        time.sleep(10)
+        register_callback(num + 1)
+    
 
 app = Quart(__name__)
+register_callback()
 QuartSchema(app)
 
 @app.route('/postgame', methods=['POST'])
 async def postgame():
+    r = redis.Redis(db=0)
     data = await request.get_json()
-    # test = data.decode('utf-8') 
-    # print(test,type(test))
-    r = redis.Redis(host='localhost',port=6379,db=0)
+
+    #data from game service 
     username = data["username"]
     score = data["score"]
-    print(data,data["username"])
+
     r.lpush(username,score) #push user and score as a list
     r.zadd("username",{username:score}) # will be used to traverse all users
 
@@ -38,10 +67,16 @@ async def leaderboard():
     r = redis.Redis(db=0)
     # r.flushdb() #used to clear db
 
-    #get list of users and their scores
+    url = socket.getfqdn("http://localhost")
+    port = os.environ.get('PORT')
+
+    #register callback url to games service
+    payload = {"url":f"{url}:{port}"}
+    resp = httpx.post(f'http://localhost:5100/addurl',json=payload)
+    #  get list of users and their scores
     scoreL = r.zrange("username",0,-1,withscores=True)
     result = {}
-    print(len(scoreL), scoreL)
+    #include all users if there is less 10
     if(len(scoreL) < 10 and len(scoreL) >= 1):
         for i in range(0,len(scoreL)):
             #add top 10 from scoreL starting from end, since it is sorted in asc order
@@ -57,10 +92,3 @@ async def leaderboard():
 def conflict(e):
     return {"error": str(e)}, 409
 
-
-# def log_request(request):
-#     print(f"Request event hook: {request.method} {request.url} - Waiting for response")
-
-# def log_response(response):
-#     request = response.request
-#     print(f"Response event hook: {request.method} {request.url} - Status {response.status_code}")

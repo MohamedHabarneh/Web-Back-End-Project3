@@ -1,0 +1,10 @@
+port              5200
+daemonize         yes
+save              60 1
+bind              127.0.0.1
+tcp-keepalive     300
+dbfilename        dump.rdb
+dir               ./
+rdbcompression    yes
+
+in redis config
