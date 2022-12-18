@@ -9,7 +9,7 @@
 
 ##### HOW TO RUN THE PROJECT
 
-1. Copy the contents of our [nginx config file](https://github.com/himanitawade/Web-Back-End-Project2/blob/master/nginxconfig.txt) into a new file within `/etc/nginx/sites-enabled` called `nginxconfig`. Assuming the nginx service is already running, restart the service using `sudo service nginx restart`.
+1. Copy the contents of our [nginx config file](https://github.com/MohamedHabarneh/Web-Back-End-Project3/blob/master/nginxconfig.txt) into a new file within `/etc/nginx/sites-enabled` called `nginxconfig`. Assuming the nginx service is already running, restart the service using `sudo service nginx restart`.
 
 Nginx Config:
 
@@ -54,9 +54,8 @@ server {
 
 upstream gameservice {
     server 127.0.0.1:5100;
-    server 127.0.0.1:5101;
-    server 127.0.0.1:5102;
-    server 127.0.0.1:5103;
+    server 127.0.0.1:5200;
+    server 127.0.0.1:5300;
 }
 ```
 
